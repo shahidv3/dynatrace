@@ -48,25 +48,26 @@ def get_oci_instances(compartments):
                 except Exception:
                     pass
 
-                # Get VNIC for internal FQDN
+                # Get VNIC for internal IP and hostname_label
                 vnic_attachments = compute_client.list_vnic_attachments(
                     compartment_id=comp_id, instance_id=instance.id
                 ).data
-                internal_fqdn = None
+
+                internal_ip = None
+                hostname_label = None
 
                 if vnic_attachments:
                     vnic_id = vnic_attachments[0].vnic_id
                     vnic = virtual_network_client.get_vnic(vnic_id).data
-
+                    internal_ip = vnic.private_ip.lower() if vnic.private_ip else None
                     hostname_label = vnic.hostname_label
-                    private_ip = vnic.private_ip
-                    internal_fqdn = hostname_label if hostname_label else private_ip
                 else:
-                    internal_fqdn = instance.display_name
+                    internal_ip = None
 
                 all_instances.append({
                     "hostname": instance.display_name,
-                    "internal_fqdn": internal_fqdn.lower() if internal_fqdn else None,
+                    "internal_ip": internal_ip,
+                    "hostname_label": hostname_label,
                     "os": os_name,
                     "ram_gb": ram_gb,
                     "compartment_name": comp_name
@@ -78,12 +79,13 @@ def get_oci_instances(compartments):
     return pd.DataFrame(all_instances)
 
 
-# ===== FETCH DYNATRACE HOSTS =====
-def get_dynatrace_hosts():
+# ===== FETCH DYNATRACE HOST IPs =====
+def get_dynatrace_host_ips():
     headers = {
         "Authorization": f"Api-Token {DYNATRACE_API_TOKEN}"
     }
 
+    ip_set = set()
     try:
         response = requests.get(
             f"{DYNATRACE_API_URL}?entitySelector=type(HOST)&pageSize=500",
@@ -91,18 +93,20 @@ def get_dynatrace_hosts():
         )
         response.raise_for_status()
         entities = response.json().get("entities", [])
-        return set(e.get("displayName").lower() for e in entities if e.get("displayName"))
-
+        for e in entities:
+            ips = e.get("ipAddresses") or []
+            for ip in ips:
+                ip_set.add(ip.lower())
+        return ip_set
     except requests.exceptions.RequestException as e:
         print(f"❌ Dynatrace API error: {e}")
         return set()
 
 
 # ===== COMPARE & REPORT =====
-def generate_gap_and_host_unit_report(oci_df, dt_hostnames):
+def generate_gap_and_host_unit_report(oci_df, dynatrace_ips):
     def is_monitored(row):
-        target = row["internal_fqdn"] if row["internal_fqdn"] else row["hostname"]
-        return target.lower() in dt_hostnames
+        return row["internal_ip"] in dynatrace_ips if row["internal_ip"] else False
 
     oci_df["monitored_in_dynatrace"] = oci_df.apply(is_monitored, axis=1)
     oci_df["host_units"] = oci_df["ram_gb"].apply(lambda ram: ceil(ram / 16))
@@ -111,8 +115,8 @@ def generate_gap_and_host_unit_report(oci_df, dt_hostnames):
     unmonitored_df = oci_df[~oci_df["monitored_in_dynatrace"]]
 
     # Save CSVs
-    oci_df.to_csv("oci_dynatrace_gap_report.csv", index=False)
-    unmonitored_df.to_csv("oci_hosts_not_monitored.csv", index=False)
+    oci_df.to_csv("oci_dynatrace_gap_report_ip.csv", index=False)
+    unmonitored_df.to_csv("oci_hosts_not_monitored_ip.csv", index=False)
 
     summary = {
         "total_oci_hosts": len(oci_df),
@@ -123,21 +127,21 @@ def generate_gap_and_host_unit_report(oci_df, dt_hostnames):
         "host_units_unmonitored": unmonitored_df["host_units"].sum()
     }
 
-    pd.DataFrame([summary]).to_csv("oci_host_unit_summary.csv", index=False)
+    pd.DataFrame([summary]).to_csv("oci_host_unit_summary_ip.csv", index=False)
 
-    print("\n✅ Gap analysis completed.")
+    print("\n✅ Gap analysis completed (IP-based comparison).")
     print(f"🔢 Total OCI hosts: {summary['total_oci_hosts']}")
     print(f"✅ Monitored: {summary['monitored_hosts']} ({summary['host_units_monitored']} HUs)")
     print(f"❌ Not Monitored: {summary['unmonitored_hosts']} ({summary['host_units_unmonitored']} HUs)")
     print("📁 Output files:")
-    print("  - oci_dynatrace_gap_report.csv")
-    print("  - oci_hosts_not_monitored.csv")
-    print("  - oci_host_unit_summary.csv")
+    print("  - oci_dynatrace_gap_report_ip.csv")
+    print("  - oci_hosts_not_monitored_ip.csv")
+    print("  - oci_host_unit_summary_ip.csv")
 
 
 # ===== MAIN =====
 if __name__ == "__main__":
-    print("🔍 Starting Dynatrace–OCI Monitoring Gap Analysis...")
+    print("🔍 Starting Dynatrace–OCI Monitoring Gap Analysis (IP-based)...")
     oci_hosts_df = get_oci_instances(COMPARTMENTS)
-    dynatrace_hosts = get_dynatrace_hosts()
-    generate_gap_and_host_unit_report(oci_hosts_df, dynatrace_hosts)
+    dynatrace_ips = get_dynatrace_host_ips()
+    generate_gap_and_host_unit_report(oci_hosts_df, dynatrace_ips)
