@@ -39,8 +39,14 @@ def get_oci_instances(compartments):
                 shape = instance_details.shape_config
                 ram_gb = shape.memory_in_gbs if shape else 16
 
-                # OS name (image)
-                os_name = instance_details.metadata.get('os', 'Unknown')
+                # Get OS name via image details
+                os_name = "Unknown"
+                try:
+                    if instance_details.image_id:
+                        image_details = compute_client.get_image(instance_details.image_id).data
+                        os_name = image_details.operating_system or "Unknown"
+                except Exception:
+                    pass
 
                 # Get VNIC for internal FQDN
                 vnic_attachments = compute_client.list_vnic_attachments(
