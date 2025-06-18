@@ -1,0 +1,4 @@
+oci>=2.113.0
+requests>=2.25.1
+pandas>=1.2.0
+openpyxl>=3.0.9
