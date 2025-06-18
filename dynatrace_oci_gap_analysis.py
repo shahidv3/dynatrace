@@ -3,23 +3,24 @@ import requests
 import pandas as pd
 from math import ceil
 
-# ========== CONFIGURATION ==========
-OCI_PROFILE = "DEFAULT"
+# ===== CONFIGURATION =====
+OCI_PROFILE = "DEFAULT"  # Change if needed
 
 COMPARTMENTS = [
-    {"id": "<compartment-ocid-1>", "name": "Production"},
-    {"id": "<compartment-ocid-2>", "name": "UAT"},
-    {"id": "<compartment-ocid-3>", "name": "Dev"}
+    {"id": "ocid1.compartment.oc1..aaaa...", "name": "Production"},
+    {"id": "ocid1.compartment.oc1..bbbb...", "name": "UAT"},
+    {"id": "ocid1.compartment.oc1..cccc...", "name": "Dev"}
 ]
 
-DYNATRACE_API_URL = "https://<your-env>.live.dynatrace.com/api/v2/entities"
+DYNATRACE_API_URL = "https://<your-dynatrace-server>/api/v2/entities"  # Self-managed Dynatrace URL
 DYNATRACE_API_TOKEN = "<your-dynatrace-api-token>"
 
 
-# ========== FETCH OCI INSTANCES ==========
+# ===== FETCH OCI INSTANCES WITH INTERNAL FQDN =====
 def get_oci_instances(compartments):
     config = oci.config.from_file(profile_name=OCI_PROFILE)
     compute_client = oci.core.ComputeClient(config)
+    virtual_network_client = oci.core.VirtualNetworkClient(config)
     all_instances = []
 
     for comp in compartments:
@@ -36,10 +37,25 @@ def get_oci_instances(compartments):
             for instance in instances:
                 instance_details = compute_client.get_instance(instance.id).data
                 shape = instance_details.shape_config
-                ram_gb = shape.memory_in_gbs if shape else 16  # fallback to 16 GB
+                ram_gb = shape.memory_in_gbs if shape else 16  # fallback
+
+                # Get VNIC attachments to find private DNS
+                vnic_attachments = compute_client.list_vnic_attachments(compartment_id=comp_id, instance_id=instance.id).data
+                internal_fqdn = None
+
+                if vnic_attachments:
+                    vnic_id = vnic_attachments[0].vnic_id
+                    vnic = virtual_network_client.get_vnic(vnic_id).data
+
+                    private_dns_name = vnic.private_dns_name  # Internal FQDN
+                    internal_fqdn = private_dns_name if private_dns_name else vnic.private_ip
+
+                else:
+                    internal_fqdn = instance.display_name  # fallback
 
                 all_instances.append({
                     "hostname": instance.display_name,
+                    "internal_fqdn": internal_fqdn.lower() if internal_fqdn else None,
                     "ram_gb": ram_gb,
                     "compartment_name": comp_name,
                     "compartment_id": comp_id
@@ -51,35 +67,43 @@ def get_oci_instances(compartments):
     return pd.DataFrame(all_instances)
 
 
-# ========== FETCH DYNATRACE MONITORED HOSTS ==========
+# ===== FETCH DYNATRACE HOSTS =====
 def get_dynatrace_hosts():
     headers = {
         "Authorization": f"Api-Token {DYNATRACE_API_TOKEN}"
     }
 
-    response = requests.get(
-        f"{DYNATRACE_API_URL}?entitySelector=type(HOST)&pageSize=500",
-        headers=headers
-    )
+    try:
+        response = requests.get(
+            f"{DYNATRACE_API_URL}?entitySelector=type(HOST)&pageSize=500",
+            headers=headers
+        )
+        response.raise_for_status()
+        entities = response.json().get("entities", [])
+        return set(e.get("displayName").lower() for e in entities)
 
-    entities = response.json().get("entities", [])
-    return set(e.get("displayName") for e in entities)
+    except requests.exceptions.RequestException as e:
+        print(f"❌ Error fetching Dynatrace hosts: {e}")
+        return set()
 
 
-# ========== GAP REPORT + HOST UNIT SUMMARY ==========
+# ===== COMPARE & REPORT =====
 def generate_gap_and_host_unit_report(oci_df, dt_hostnames):
-    oci_df["monitored_in_dynatrace"] = oci_df["hostname"].apply(lambda h: h in dt_hostnames)
+    # Match based on internal_fqdn if available, else hostname
+    def is_monitored(row):
+        target = row["internal_fqdn"] if row["internal_fqdn"] else row["hostname"]
+        return target.lower() in dt_hostnames
+
+    oci_df["monitored_in_dynatrace"] = oci_df.apply(is_monitored, axis=1)
     oci_df["host_units"] = oci_df["ram_gb"].apply(lambda ram: ceil(ram / 16))
 
-    # Subsets
     monitored_df = oci_df[oci_df["monitored_in_dynatrace"]]
     unmonitored_df = oci_df[~oci_df["monitored_in_dynatrace"]]
 
-    # Save detailed host list
+    # Save CSV reports
     oci_df.to_csv("oci_dynatrace_gap_report.csv", index=False)
     unmonitored_df.to_csv("oci_hosts_not_monitored.csv", index=False)
 
-    # Host Unit summary
     summary = {
         "total_oci_hosts": len(oci_df),
         "total_host_units_all": oci_df["host_units"].sum(),
@@ -91,20 +115,19 @@ def generate_gap_and_host_unit_report(oci_df, dt_hostnames):
 
     pd.DataFrame([summary]).to_csv("oci_host_unit_summary.csv", index=False)
 
-    # Display
-    print("✅ Gap analysis completed.")
-    print(f"📝 Total OCI hosts found: {summary['total_oci_hosts']}")
-    print(f"✅ Monitored in Dynatrace: {summary['monitored_hosts']} ({summary['host_units_monitored']} HUs)")
-    print(f"❌ Not monitored in Dynatrace: {summary['unmonitored_hosts']} ({summary['host_units_unmonitored']} HUs)")
-    print("📁 Files created:")
-    print("   - oci_dynatrace_gap_report.csv")
-    print("   - oci_hosts_not_monitored.csv")
-    print("   - oci_host_unit_summary.csv")
+    print("\n✅ Gap analysis completed.")
+    print(f"🔢 Total OCI hosts: {summary['total_oci_hosts']}")
+    print(f"✅ Monitored: {summary['monitored_hosts']} ({summary['host_units_monitored']} HUs)")
+    print(f"❌ Not Monitored: {summary['unmonitored_hosts']} ({summary['host_units_unmonitored']} HUs)")
+    print("📁 Output files:")
+    print("  - oci_dynatrace_gap_report.csv")
+    print("  - oci_hosts_not_monitored.csv")
+    print("  - oci_host_unit_summary.csv")
 
 
-# ========== MAIN ==========
+# ===== MAIN =====
 if __name__ == "__main__":
-    print("🔍 Starting OCI-Dynatrace gap analysis...")
+    print("🔍 Starting Dynatrace–OCI Monitoring Gap Analysis...")
 
     oci_hosts_df = get_oci_instances(COMPARTMENTS)
     dynatrace_hosts = get_dynatrace_hosts()
