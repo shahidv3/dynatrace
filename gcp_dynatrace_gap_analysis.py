@@ -1,163 +1,163 @@
 import csv
 import math
 import requests
-import pandas as pd
-from googleapiclient.discovery import build
 import google.auth
+from googleapiclient.discovery import build
 
-# ===== CONFIGURATION =====
+# -------- CONFIG --------
 GCP_PROJECTS = [
-    {"id": "project-1", "name": "Production"},
-    {"id": "project-2", "name": "UAT"}
+    {"id": "your-project-id-1", "name": "Production"},
+    {"id": "your-project-id-2", "name": "UAT"}
 ]
 
-DYNATRACE_API_URL = "https://your-dynatrace-domain.com/api/v1/entity/infrastructure/hosts"
-DYNATRACE_API_TOKEN = "<your_api_token>"
+DYNATRACE_API_URL = "https://<your-env>.live.dynatrace.com/api/v1/entity/infrastructure/hosts"
+DYNATRACE_API_TOKEN = "<your-dynatrace-api-token>"
 
 
-# ===== FETCH GCP INSTANCES =====
-def get_gcp_instances(projects, credentials):
-    compute = build('compute', 'v1', credentials=credentials)
-    all_instances = []
+# -------- GCP FUNCTIONS --------
+def get_gcp_instances(project_id, credentials):
+    service = build('compute', 'v1', credentials=credentials)
+    request = service.instances().aggregatedList(project=project_id)
+    all_vms = []
 
-    for proj in projects:
-        project_id = proj["id"]
-        project_name = proj["name"]
-        print(f"📦 Fetching instances from project: {project_name}")
+    while request is not None:
+        response = request.execute()
 
-        request = compute.instances().aggregatedList(project=project_id)
-        while request is not None:
-            response = request.execute()
-            for zone, instances_scoped_list in response.get('items', {}).items():
-                for instance in instances_scoped_list.get('instances', []):
-                    if instance['status'] != 'RUNNING':
-                        continue
+        for zone, zone_data in response.get("items", {}).items():
+            for instance in zone_data.get("instances", []):
+                name = instance.get("name")
+                status = instance.get("status")
+                internal_ip = instance.get("networkInterfaces", [{}])[0].get("networkIP")
+                machine_type_url = instance.get("machineType", "")
+                machine_type = machine_type_url.split("/")[-1]
+                zone_name = machine_type_url.split("/")[-3]
 
-                    try:
-                        machine_type = instance['machineType'].split('/')[-1]
-                        zone_name = instance['zone'].split('/')[-1]
-                        internal_ip = instance['networkInterfaces'][0]['networkIP']
-                        metadata = {
-                            "hostname": instance['name'].lower(),
-                            "internal_ip": internal_ip.strip().lower(),
-                            "project": project_name,
-                            "zone": zone_name,
-                            "machine_type": machine_type,
-                            "status": instance['status'],
-                            "ram_gb": None,
-                            "vcpus": None
-                        }
-                        all_instances.append(metadata)
-                    except Exception as e:
-                        print(f"⚠️ Error parsing instance: {e}")
-            request = compute.instances().aggregatedList_next(previous_request=request, previous_response=response)
+                # OS information
+                os_info = (
+                    instance.get("disks", [{}])[0]
+                    .get("licenses", ["unknown"])[0]
+                    .split("/")[-1]
+                )
 
-    return pd.DataFrame(all_instances)
+                # RAM & CPU
+                try:
+                    mt_response = service.machineTypes().get(
+                        project=project_id,
+                        zone=zone_name,
+                        machineType=machine_type
+                    ).execute()
+                    ram_mb = mt_response.get("memoryMb", 0)
+                    ram_gb = round(ram_mb / 1024, 2)
+                    vcpus = mt_response.get("guestCpus", 0)
+                except Exception:
+                    ram_mb = 0
+                    ram_gb = 0
+                    vcpus = 0
+
+                all_vms.append({
+                    "name": name,
+                    "project": project_id,
+                    "zone": zone_name,
+                    "status": status,
+                    "internal_ip": internal_ip,
+                    "machine_type": machine_type,
+                    "os": os_info,
+                    "vcpus": vcpus,
+                    "ram_mb": ram_mb,
+                    "ram_gb": ram_gb
+                })
+
+        request = service.instances().aggregatedList_next(
+            previous_request=request,
+            previous_response=response
+        )
+
+    return all_vms
 
 
-def get_machine_type_details(df, credentials):
-    compute = build('compute', 'v1', credentials=credentials)
-    for i, row in df.iterrows():
-        try:
-            resp = compute.machineTypes().get(
-                project=row['project'],
-                zone=row['zone'],
-                machineType=row['machine_type']
-            ).execute()
-            df.at[i, 'ram_gb'] = round(resp.get('memoryMb', 0) / 1024, 2)
-            df.at[i, 'vcpus'] = resp.get('guestCpus', 0)
-        except Exception:
-            df.at[i, 'ram_gb'] = 0
-            df.at[i, 'vcpus'] = 0
-    return df
-
-
-# ===== FETCH DYNATRACE HOST IPs (v1 API) =====
-def get_dynatrace_host_ips():
-    headers = {
-        "Authorization": f"Api-Token {DYNATRACE_API_TOKEN}"
-    }
+# -------- DYNATRACE FUNCTIONS --------
+def get_dynatrace_internal_ips():
+    headers = {"Authorization": f"Api-Token {DYNATRACE_API_TOKEN}"}
+    ip_set = set()
+    ip_map = {}
 
     try:
         response = requests.get(DYNATRACE_API_URL, headers=headers)
         response.raise_for_status()
-        hosts = response.json()
-
-        ip_set = set()
-        ip_to_hostname = {}
-
-        print("\n📡 Dynatrace monitored hosts:")
-        for host in hosts:
-            display_name = host.get("displayName", "N/A").strip().lower()
-            ip_addresses = host.get("ipAddresses", [])
-            if ip_addresses:
-                for ip in ip_addresses:
-                    ip_clean = ip.strip().lower()
-                    ip_set.add(ip_clean)
-                    ip_to_hostname[ip_clean] = display_name
-                    print(f"🖥️  {display_name} → {ip_clean}")
-            else:
-                print(f"⚠️  {display_name} has no IPs")
-
-        return ip_set, ip_to_hostname
-
-    except requests.exceptions.RequestException as e:
+        for host in response.json():
+            hostname = host.get("displayName", "").strip().lower()
+            for ip in host.get("ipAddresses", []):
+                ip_clean = ip.strip().lower()
+                ip_set.add(ip_clean)
+                ip_map[ip_clean] = hostname
+    except Exception as e:
         print(f"❌ Dynatrace API error: {e}")
-        if hasattr(e, 'response') and e.response is not None:
-            print(f"🔍 Response: {e.response.text}")
-        return set(), {}
+    return ip_set, ip_map
 
 
-# ===== GAP ANALYSIS BASED ON IP =====
-def generate_gap_report(df, dynatrace_ip_set, dynatrace_ip_map):
-    def check_monitored(row):
-        ip = row.get("internal_ip")
-        if ip and ip in dynatrace_ip_set:
-            return True, dynatrace_ip_map[ip]
+# -------- MATCHING + GAP ANALYSIS --------
+def match_and_report(all_instances, dynatrace_ips, dynatrace_map):
+    matched = []
+    unmatched = []
+
+    for inst in all_instances:
+        ip = (inst.get("internal_ip") or "").strip().lower()
+        if ip in dynatrace_ips:
+            inst["monitored"] = "Yes"
+            inst["dynatrace_host"] = dynatrace_map.get(ip)
+            matched.append(inst)
         else:
-            return False, None
+            inst["monitored"] = "No"
+            inst["dynatrace_host"] = ""
+            inst["required_hu"] = math.ceil(inst["ram_gb"] / 16) if inst["ram_gb"] else 0
+            unmatched.append(inst)
 
-    df[["monitored_in_dynatrace", "dynatrace_host"]] = df.apply(
-        lambda row: pd.Series(check_monitored(row)), axis=1
-    )
+    # CSV: Full report
+    write_csv("gcp_dynatrace_gap_report.csv", all_instances, [
+        "name", "project", "zone", "machine_type", "internal_ip", "status",
+        "os", "vcpus", "ram_mb", "ram_gb", "monitored", "dynatrace_host"
+    ])
 
-    df["host_units"] = df["ram_gb"].apply(lambda ram: math.ceil(ram / 16) if ram else 0)
+    # CSV: Unmonitored only
+    write_csv("gcp_hosts_not_monitored.csv", unmatched, [
+        "name", "project", "zone", "machine_type", "internal_ip", "status",
+        "os", "vcpus", "ram_mb", "ram_gb", "required_hu"
+    ])
 
-    monitored_df = df[df["monitored_in_dynatrace"]]
-    unmonitored_df = df[~df["monitored_in_dynatrace"]]
-
-    df.to_csv("gcp_dynatrace_gap_report.csv", index=False)
-    unmonitored_df.to_csv("gcp_hosts_not_monitored.csv", index=False)
-
+    # CSV: Summary
     summary = {
-        "total_gcp_hosts": len(df),
-        "total_host_units_all": df["host_units"].sum(),
-        "monitored_hosts": len(monitored_df),
-        "host_units_monitored": monitored_df["host_units"].sum(),
-        "unmonitored_hosts": len(unmonitored_df),
-        "host_units_unmonitored": unmonitored_df["host_units"].sum()
+        "total_vms": len(all_instances),
+        "monitored_vms": len(matched),
+        "unmonitored_vms": len(unmatched),
+        "required_hus_unmonitored": sum(i.get("required_hu", 0) for i in unmatched)
     }
+    write_csv("gcp_host_unit_summary.csv", [summary], summary.keys())
 
-    pd.DataFrame([summary]).to_csv("gcp_host_unit_summary.csv", index=False)
-
-    print("\n✅ Gap analysis completed.")
-    print(f"🔢 Total GCP hosts: {summary['total_gcp_hosts']}")
-    print(f"✅ Monitored: {summary['monitored_hosts']} ({summary['host_units_monitored']} HUs)")
-    print(f"❌ Not Monitored: {summary['unmonitored_hosts']} ({summary['host_units_unmonitored']} HUs)")
-    print("📁 Output files:")
-    print("  - gcp_dynatrace_gap_report.csv")
-    print("  - gcp_hosts_not_monitored.csv")
-    print("  - gcp_host_unit_summary.csv")
+    print("\n✅ GAP ANALYSIS DONE")
+    print(f"🔢 Total VMs: {summary['total_vms']}")
+    print(f"✅ Monitored: {summary['monitored_vms']}")
+    print(f"❌ Unmonitored: {summary['unmonitored_vms']} (HUs needed: {summary['required_hus_unmonitored']})")
 
 
-# ===== MAIN =====
+def write_csv(filename, data, fieldnames):
+    with open(filename, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=fieldnames)
+        writer.writeheader()
+        writer.writerows(data)
+
+
+# -------- MAIN --------
 if __name__ == "__main__":
-    print("🔍 Starting GCP-Dynatrace host gap analysis based on IP...")
-
+    print("🔍 Starting GCP-Dynatrace Gap Analysis...\n")
     credentials, _ = google.auth.default()
 
-    gcp_df = get_gcp_instances(GCP_PROJECTS, credentials)
-    gcp_df = get_machine_type_details(gcp_df, credentials)
+    all_instances = []
+    for project in GCP_PROJECTS:
+        print(f"📦 Fetching VMs from {project['name']} ({project['id']})...")
+        all_instances += get_gcp_instances(project["id"], credentials)
 
-    dynatrace_ip_set, dynatrace_ip_map = get_dynatrace_host_ips()
-    generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map)
+    print("🌐 Fetching monitored hosts from Dynatrace...")
+    dynatrace_ips, dynatrace_ip_map = get_dynatrace_internal_ips()
+
+    print("📊 Matching & generating gap reports...")
+    match_and_report(all_instances, dynatrace_ips, dynatrace_ip_map)
