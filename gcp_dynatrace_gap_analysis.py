@@ -63,7 +63,7 @@ def get_gcp_instances(projects):
                             "hostname": name,
                             "internal_ip": internal_ip,
                             "os": os_name,
-                            "status": status,
+                            "status": status,   # <-- VM status captured here
                             "ram_gb": ram_gb
                         }
                         print(f"      Adding instance: {instance_info}")
@@ -119,13 +119,30 @@ def get_dynatrace_host_ips():
 def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     print("\n🔍 Starting gap analysis...")
 
-    # Debug: Check columns present in gcp_df
-    print(f"Columns in GCP DataFrame before adding host_units: {gcp_df.columns.tolist()}")
+    required_cols = [
+        "hostname",
+        "ram_gb",
+        "internal_ip",
+        "host_units",
+        "monitored_in_dynatrace",
+        "dynatrace_host",
+        "status"
+    ]
 
-    for col in ["ram_gb", "host_units"]:
+    for col in required_cols:
         if col not in gcp_df.columns:
-            print(f"⚠️ Column '{col}' missing in DataFrame, adding it with None values")
-            gcp_df[col] = None
+            default_value = None
+            if col == "monitored_in_dynatrace":
+                default_value = False
+            elif col == "dynatrace_host":
+                default_value = ""
+            gcp_df[col] = default_value
+            print(f"⚠️ Column '{col}' missing, added with default {default_value}")
+
+    print(f"Columns after check: {gcp_df.columns.tolist()}")
+
+    print("\nVM status distribution:")
+    print(gcp_df["status"].value_counts(dropna=False))
 
     def check_monitored(row):
         ip = row.get("internal_ip")
@@ -142,24 +159,22 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
 
-    # Debug print some rows with ram_gb before calculation
     print("\nRAM GB sample values:")
     print(gcp_df["ram_gb"].head())
 
-    # Compute host units
     def calc_host_units(row):
-        ram = row["ram_gb"]
+        ram = row.get("ram_gb", None)
+        hostname = row.get("hostname", "<missing>")
         if pd.notnull(ram):
             hu = ceil(ram / 16)
-            print(f"Calculating host units for RAM {ram} GB: {hu}")
+            print(f"Calculating host units for RAM {ram} GB (host: {hostname}): {hu}")
             return hu
         else:
-            print(f"No RAM info for row with hostname {row.get('hostname')}")
+            print(f"No RAM info for row with hostname {hostname}")
             return None
 
     gcp_df["host_units"] = gcp_df.apply(calc_host_units, axis=1)
 
-    # Debug print some rows after host_units calculation
     print("\nHost units sample values:")
     print(gcp_df[["hostname", "ram_gb", "host_units"]].head())
 
@@ -174,6 +189,11 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
         "unmonitored_hosts": len(unmonitored_df),
         "host_units_unmonitored": unmonitored_df["host_units"].sum(skipna=True)
     }
+
+    print("\n📝 VM Status Summary:")
+    status_summary = gcp_df["status"].value_counts(dropna=False).to_dict()
+    for st, count in status_summary.items():
+        print(f"  {st}: {count}")
 
     gcp_df.to_csv("gcp_dynatrace_gap_report.csv", index=False)
     unmonitored_df.to_csv("gcp_hosts_not_monitored.csv", index=False)
