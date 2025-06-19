@@ -7,7 +7,7 @@ from googleapiclient.discovery import build
 # ---------- CONFIGURATION ----------
 GCP_PROJECTS = ['project-1', 'project-2']
 DT_API_TOKEN = 'dt_api_token_here'
-DT_ENV_URL = 'https://<your-env>.live.dynatrace.com'
+DT_ENV_URL = 'https://<your-env>.live.dynatrace.com'  # Replace with your Dynatrace URL
 
 # ---------- FUNCTIONS ----------
 
@@ -89,7 +89,15 @@ def match_instances(gcp_instances, dynatrace_hosts):
                 unmonitored.append(inst)
     return monitored, unmonitored
 
-def write_csv(filename, data, fields):
+def write_csv(filename, data, fields=None):
+    if not data:
+        print(f"[INFO] No data to write for {filename}")
+        return
+
+    # Auto-detect fields if not provided
+    if fields is None:
+        fields = sorted({k for row in data for k in row.keys()})
+
     with open(filename, 'w', newline='') as f:
         writer = csv.DictWriter(f, fieldnames=fields)
         writer.writeheader()
@@ -114,36 +122,27 @@ dynatrace_hosts = fetch_dynatrace_hosts()
 print("Matching monitored vs unmonitored...")
 monitored, unmonitored = match_instances(enriched_instances, dynatrace_hosts)
 
-# Add 'monitored' status to enriched_instances for full report
+# Ensure 'monitored' field is populated for all enriched instances
 monitored_ips = {h['internal_ip'] for h in monitored}
 for inst in enriched_instances:
     inst['monitored'] = inst['internal_ip'] in monitored_ips
 
 print("Writing CSV reports...")
 
-# 1. Full list with monitoring status
-write_csv(
-    'gcp_dynatrace_gap_report.csv',
-    enriched_instances,
-    ['name', 'internal_ip', 'project', 'zone', 'machine_type', 'vcpus', 'ram_mb', 'status', 'monitored']
-)
+# 1. Full report with monitoring status
+write_csv('gcp_dynatrace_gap_report.csv', enriched_instances)
 
 # 2. Unmonitored and running only
-write_csv(
-    'gcp_hosts_not_monitored.csv',
-    unmonitored,
-    ['name', 'internal_ip', 'project', 'zone', 'machine_type', 'vcpus', 'ram_mb', 'ram_gb', 'required_hu', 'status']
-)
+write_csv('gcp_hosts_not_monitored.csv', unmonitored)
 
-# 3. Summary
+# 3. Summary report
 summary = [{
     'total_instances': len(enriched_instances),
     'monitored_hosts': len(monitored),
     'unmonitored_hosts': len(unmonitored),
-    'total_required_host_units': sum(inst['required_hu'] for inst in unmonitored),
+    'total_required_host_units': sum(inst.get('required_hu', 0) for inst in unmonitored),
 }]
-
-write_csv('gcp_host_unit_summary.csv', summary, summary[0].keys())
+write_csv('gcp_host_unit_summary.csv', summary)
 
 print("✅ Reports generated:")
 print(" - gcp_dynatrace_gap_report.csv")
