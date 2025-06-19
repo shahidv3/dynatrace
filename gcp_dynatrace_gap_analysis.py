@@ -7,10 +7,10 @@ from google.auth import default
 # ==== CONFIGURATION ====
 DYNATRACE_API_URL = "https://your-dynatrace-domain.com/api/v1/entity/infrastructure/hosts"
 DYNATRACE_API_TOKEN = "<your_dynatrace_api_token>"
-GCP_PROJECTS = ["your-project-id-1", "your-project-id-2"]  # Replace with your project IDs
+GCP_PROJECTS = ["your-project-id-1", "your-project-id-2"]  # Replace with your actual GCP project IDs
 
 
-# ==== FETCH GCP INSTANCES ACROSS ZONES ====
+# ==== FETCH GCP INSTANCES ACROSS ALL ZONES ====
 def get_gcp_instances():
     credentials, _ = default()
     all_instances = []
@@ -26,27 +26,28 @@ def get_gcp_instances():
                 for zone, zone_data in response.get('items', {}).items():
                     instances = zone_data.get('instances', [])
                     for inst in instances:
-                        name = inst["name"]
+                        name = inst.get("name", "")
                         os_name = inst["disks"][0].get("licenses", ["Unknown"])[0].split("/")[-1]
                         network_interfaces = inst.get("networkInterfaces", [])
                         internal_ip = network_interfaces[0].get("networkIP", "").lower() if network_interfaces else None
+                        status = inst.get("status", "UNKNOWN")
 
-                        # Get RAM size from machine type
-                        machine_type_url = inst["machineType"]
-                        machine_type_name = machine_type_url.split("/")[-1]
-                        zone_name = machine_type_url.split("/")[-3]
-
+                        # RAM info (optional)
+                        ram_gb = None
                         try:
+                            machine_type_url = inst["machineType"]
+                            machine_type_name = machine_type_url.split("/")[-1]
+                            zone_name = machine_type_url.split("/")[-3]
                             machine_type = service.machineTypes().get(
                                 project=project,
                                 zone=zone_name,
                                 machineType=machine_type_name
                             ).execute()
-                            ram_mb = machine_type.get("memoryMb", 16384)
-                            ram_gb = round(ram_mb / 1024, 2)
+                            if "memoryMb" in machine_type:
+                                ram_mb = machine_type["memoryMb"]
+                                ram_gb = round(ram_mb / 1024, 2)
                         except Exception as e:
                             print(f"⚠️ Could not fetch machine type RAM for {name}: {e}")
-                            ram_gb = 16  # fallback
 
                         all_instances.append({
                             "project_id": project,
@@ -54,6 +55,7 @@ def get_gcp_instances():
                             "hostname": name,
                             "internal_ip": internal_ip,
                             "os": os_name,
+                            "status": status,
                             "ram_gb": ram_gb
                         })
 
@@ -113,7 +115,8 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     monitored_status = gcp_df.apply(lambda row: check_monitored(row), axis=1)
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
-    gcp_df["host_units"] = gcp_df["ram_gb"].apply(lambda ram: ceil(ram / 16))
+
+    gcp_df["host_units"] = gcp_df["ram_gb"].apply(lambda ram: ceil(ram / 16) if pd.notnull(ram) else None)
 
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
     unmonitored_df = gcp_df[~gcp_df["monitored_in_dynatrace"]]
@@ -123,11 +126,11 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
 
     summary = {
         "total_gcp_hosts": len(gcp_df),
-        "total_host_units_all": gcp_df["host_units"].sum(),
+        "total_host_units_all": gcp_df["host_units"].sum(skipna=True),
         "monitored_hosts": len(monitored_df),
-        "host_units_monitored": monitored_df["host_units"].sum(),
+        "host_units_monitored": monitored_df["host_units"].sum(skipna=True),
         "unmonitored_hosts": len(unmonitored_df),
-        "host_units_unmonitored": unmonitored_df["host_units"].sum()
+        "host_units_unmonitored": unmonitored_df["host_units"].sum(skipna=True)
     }
 
     pd.DataFrame([summary]).to_csv("gcp_host_unit_summary.csv", index=False)
