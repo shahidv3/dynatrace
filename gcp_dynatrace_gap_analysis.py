@@ -5,9 +5,9 @@ import google.auth
 from googleapiclient.discovery import build
 
 # ---------- CONFIGURATION ----------
-GCP_PROJECTS = ['project-1', 'project-2']
-DT_API_TOKEN = 'dt_api_token_here'
-DT_ENV_URL = 'https://<your-env>.live.dynatrace.com'  # Replace with your Dynatrace URL
+GCP_PROJECTS = ['project-1', 'project-2']  # Replace with actual GCP project IDs
+DT_API_TOKEN = 'dt_api_token_here'         # Replace with your Dynatrace API token
+DT_ENV_URL = 'https://<your-env>.live.dynatrace.com'  # Replace with your Dynatrace environment URL
 
 # ---------- FUNCTIONS ----------
 
@@ -61,10 +61,17 @@ def fetch_dynatrace_hosts():
         'entitySelector': 'type("HOST")',
         'pageSize': 400
     }
+
     while url:
         response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
         data = response.json()
-        entities.extend(data.get('entities', []))
+        for entity in data.get('entities', []):
+            entities.append({
+                'displayName': entity.get('displayName'),
+                'entityId': entity.get('entityId'),
+                'ipAddresses': entity.get('properties', {}).get('ipAddresses', [])
+            })
         next_page = data.get('nextPageKey')
         if next_page:
             url = f'{DT_ENV_URL}/api/v2/entities?nextPageKey={next_page}'
@@ -75,10 +82,12 @@ def fetch_dynatrace_hosts():
 
 def match_instances(gcp_instances, dynatrace_hosts):
     dynatrace_ips = {ip for h in dynatrace_hosts for ip in h.get('ipAddresses', [])}
+    dynatrace_names = {h.get('displayName') for h in dynatrace_hosts}
+
     monitored, unmonitored = [], []
 
     for inst in gcp_instances:
-        if inst['internal_ip'] in dynatrace_ips:
+        if inst['internal_ip'] in dynatrace_ips or inst['name'] in dynatrace_names:
             inst['monitored'] = True
             monitored.append(inst)
         else:
@@ -105,46 +114,50 @@ def write_csv(filename, data, fields=None):
 
 # ---------- MAIN ----------
 
-credentials, _ = google.auth.default()
+def main():
+    credentials, _ = google.auth.default()
 
-all_instances = []
-for project in GCP_PROJECTS:
-    print(f"Fetching instances for project: {project}")
-    instances = get_gcp_instances(project, credentials)
-    all_instances.extend(instances)
+    all_instances = []
+    for project in GCP_PROJECTS:
+        print(f"🔍 Fetching instances for project: {project}")
+        instances = get_gcp_instances(project, credentials)
+        all_instances.extend(instances)
 
-print("Enriching instance specs...")
-enriched_instances = enrich_instance_with_specs(all_instances, credentials)
+    print("🧠 Enriching instance specs...")
+    enriched_instances = enrich_instance_with_specs(all_instances, credentials)
 
-print("Fetching Dynatrace monitored hosts...")
-dynatrace_hosts = fetch_dynatrace_hosts()
+    print("🌐 Fetching Dynatrace monitored hosts...")
+    dynatrace_hosts = fetch_dynatrace_hosts()
 
-print("Matching monitored vs unmonitored...")
-monitored, unmonitored = match_instances(enriched_instances, dynatrace_hosts)
+    print("🔗 Matching monitored vs unmonitored...")
+    monitored, unmonitored = match_instances(enriched_instances, dynatrace_hosts)
 
-# Ensure 'monitored' field is populated for all enriched instances
-monitored_ips = {h['internal_ip'] for h in monitored}
-for inst in enriched_instances:
-    inst['monitored'] = inst['internal_ip'] in monitored_ips
+    # Add monitored status to full list
+    monitored_ips = {h['internal_ip'] for h in monitored}
+    for inst in enriched_instances:
+        inst['monitored'] = inst['internal_ip'] in monitored_ips or inst['name'] in {h['name'] for h in monitored}
 
-print("Writing CSV reports...")
+    print("📄 Writing CSV reports...")
 
-# 1. Full report with monitoring status
-write_csv('gcp_dynatrace_gap_report.csv', enriched_instances)
+    # 1. Full report
+    write_csv('gcp_dynatrace_gap_report.csv', enriched_instances)
 
-# 2. Unmonitored and running only
-write_csv('gcp_hosts_not_monitored.csv', unmonitored)
+    # 2. Unmonitored and running only
+    write_csv('gcp_hosts_not_monitored.csv', unmonitored)
 
-# 3. Summary report
-summary = [{
-    'total_instances': len(enriched_instances),
-    'monitored_hosts': len(monitored),
-    'unmonitored_hosts': len(unmonitored),
-    'total_required_host_units': sum(inst.get('required_hu', 0) for inst in unmonitored),
-}]
-write_csv('gcp_host_unit_summary.csv', summary)
+    # 3. Summary
+    summary = [{
+        'total_instances': len(enriched_instances),
+        'monitored_hosts': len(monitored),
+        'unmonitored_hosts': len(unmonitored),
+        'total_required_host_units': sum(inst.get('required_hu', 0) for inst in unmonitored),
+    }]
+    write_csv('gcp_host_unit_summary.csv', summary)
 
-print("✅ Reports generated:")
-print(" - gcp_dynatrace_gap_report.csv")
-print(" - gcp_hosts_not_monitored.csv")
-print(" - gcp_host_unit_summary.csv")
+    print("✅ Reports generated:")
+    print(" - gcp_dynatrace_gap_report.csv")
+    print(" - gcp_hosts_not_monitored.csv")
+    print(" - gcp_host_unit_summary.csv")
+
+if __name__ == '__main__':
+    main()
