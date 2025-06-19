@@ -1,52 +1,39 @@
 import requests
 
-# ===== Configuration =====
+# ==== Configuration ====
 DYNATRACE_API_TOKEN = "<your_api_token>"
 DYNATRACE_BASE_URL = "https://your-dynatrace-domain.com"  # No trailing slash
 
-# ===== Headers =====
 headers = {
     "Authorization": f"Api-Token {DYNATRACE_API_TOKEN}"
 }
 
-# ===== Dynatrace API Endpoint =====
-url = f"{DYNATRACE_BASE_URL}/api/v2/entities"
+url = f"{DYNATRACE_BASE_URL}/api/v1/entity/infrastructure/hosts"
 
-params = {
-    "entitySelector": "type(HOST)",
-    "fields": "properties.ipAddresses,displayName",
-    "pageSize": 500
-}
-
-# ===== Fetch and Print Hosts =====
-def fetch_host_ips():
-    print("📡 Fetching monitored hosts and IP addresses from Dynatrace...\n")
+def fetch_hosts_v1():
+    print("📡 Fetching monitored hosts and IPs from Dynatrace v1 API...\n")
 
     try:
-        response = requests.get(url, headers=headers, params=params)
+        response = requests.get(url, headers=headers)
         response.raise_for_status()
+        hosts = response.json()
 
-        entities = response.json().get("entities", [])
-        if not entities:
-            print("⚠️  No hosts found.")
-            return
+        for host in hosts:
+            display_name = host.get("displayName", "N/A")
+            ip_addresses = host.get("ipAddresses", [])
 
-        for entity in entities:
-            hostname = entity.get("displayName", "N/A")
-            ip_list = entity.get("properties", {}).get("ipAddresses", [])
-
-            print(f"🖥️  Host: {hostname}")
-            if ip_list:
-                for ip in ip_list:
+            print(f"🖥️  Host: {display_name}")
+            if ip_addresses:
+                for ip in ip_addresses:
                     print(f"   └─ IP: {ip}")
             else:
-                print("   └─ No IPs found")
+                print("   └─ No IPs listed")
 
     except requests.exceptions.RequestException as e:
-        print(f"❌ Error fetching data from Dynatrace API: {e}")
+        print(f"❌ Error calling Dynatrace API: {e}")
         if hasattr(e, 'response') and e.response is not None:
             print(f"🔍 Response content: {e.response.text}")
 
-# ===== Main =====
+# Run
 if __name__ == "__main__":
-    fetch_host_ips()
+    fetch_hosts_v1()
