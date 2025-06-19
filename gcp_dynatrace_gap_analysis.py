@@ -126,11 +126,9 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
 
-    # ✅ Compute host_units
-    gcp_df["host_units"] = gcp_df.apply(
-        lambda row: ceil(row["ram_gb"] / 16) if pd.notnull(row["ram_gb"]) else None,
-        axis=1
-    )
+    # ✅ Ensure ram_gb is numeric and safely compute host_units
+    gcp_df["ram_gb"] = pd.to_numeric(gcp_df["ram_gb"], errors='coerce')
+    gcp_df["host_units"] = gcp_df["ram_gb"].apply(lambda x: ceil(x / 16) if pd.notnull(x) else None)
 
     # ✅ Data splits
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
