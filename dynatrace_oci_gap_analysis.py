@@ -169,4 +169,6 @@ def generate_gap_report(oci_df, dynatrace_ip_map, dynatrace_hostname_set):
 # ===== MAIN =====
 if __name__ == "__main__":
     print("🔍 Starting gap analysis between OCI and self-managed Dynatrace...")
-    oci_df_
+    oci_df = get_oci_instances(COMPARTMENTS)
+    dynatrace_ip_map, dynatrace_hostname_set = get_dynatrace_host_ip_and_names()
+    generate_gap_report(oci_df, dynatrace_ip_map, dynatrace_hostname_set)
