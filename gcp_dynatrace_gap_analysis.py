@@ -26,8 +26,12 @@ def get_gcp_instances(projects):
             request = service.instances().aggregatedList(project=project)
             while request is not None:
                 response = request.execute()
+                print(f"  Retrieved page of instances for project {project} with {len(response.get('items',{}))} zones")
+
                 for zone, zone_data in response.get('items', {}).items():
                     instances = zone_data.get('instances', [])
+                    print(f"    Zone {zone} has {len(instances)} instances")
+
                     for inst in instances:
                         name = inst.get("name", "")
                         os_name = inst["disks"][0].get("licenses", ["Unknown"])[0].split("/")[-1]
@@ -53,7 +57,7 @@ def get_gcp_instances(projects):
                             print(f"⚠️ Could not fetch machine type RAM for {name}: {e}")
                             zone_name = zone_name if 'zone_name' in locals() else "unknown"
 
-                        all_instances.append({
+                        instance_info = {
                             "project_id": project,
                             "zone": zone_name,
                             "hostname": name,
@@ -61,14 +65,19 @@ def get_gcp_instances(projects):
                             "os": os_name,
                             "status": status,
                             "ram_gb": ram_gb
-                        })
+                        }
+                        print(f"      Adding instance: {instance_info}")
+                        all_instances.append(instance_info)
 
                 request = service.instances().aggregatedList_next(previous_request=request, previous_response=response)
 
         except Exception as e:
             print(f"❌ Error retrieving instances for project '{project}': {e}")
 
-    return pd.DataFrame(all_instances)
+    df = pd.DataFrame(all_instances)
+    print(f"\n🧮 Total instances collected: {len(df)}")
+    print(df.head())
+    return df
 
 # ==== FETCH DYNATRACE MONITORED HOSTS ====
 def get_dynatrace_host_ips():
@@ -97,6 +106,7 @@ def get_dynatrace_host_ips():
             else:
                 print(f"⚠️  {display_name} has no IPs")
 
+        print(f"\n🔢 Total Dynatrace hosts: {len(ip_set)}")
         return ip_set, ip_to_hostname
 
     except requests.exceptions.RequestException as e:
@@ -107,26 +117,51 @@ def get_dynatrace_host_ips():
 
 # ==== GAP ANALYSIS ====
 def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
+    print("\n🔍 Starting gap analysis...")
+
+    # Debug: Check columns present in gcp_df
+    print(f"Columns in GCP DataFrame before adding host_units: {gcp_df.columns.tolist()}")
+
     for col in ["ram_gb", "host_units"]:
         if col not in gcp_df.columns:
+            print(f"⚠️ Column '{col}' missing in DataFrame, adding it with None values")
             gcp_df[col] = None
 
     def check_monitored(row):
         ip = row.get("internal_ip")
+        print(f"Checking IP {ip} in Dynatrace IP set")
         if ip and ip in dynatrace_ip_set:
-            return True, dynatrace_ip_map.get(ip, "")
+            host_name = dynatrace_ip_map.get(ip, "")
+            print(f"  IP {ip} is monitored as {host_name}")
+            return True, host_name
         else:
+            print(f"  IP {ip} is NOT monitored")
             return False, ""
 
     monitored_status = gcp_df.apply(lambda row: check_monitored(row), axis=1)
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
 
+    # Debug print some rows with ram_gb before calculation
+    print("\nRAM GB sample values:")
+    print(gcp_df["ram_gb"].head())
+
     # Compute host units
-    gcp_df["host_units"] = gcp_df.apply(
-        lambda row: ceil(row["ram_gb"] / 16) if pd.notnull(row["ram_gb"]) else None,
-        axis=1
-    )
+    def calc_host_units(row):
+        ram = row["ram_gb"]
+        if pd.notnull(ram):
+            hu = ceil(ram / 16)
+            print(f"Calculating host units for RAM {ram} GB: {hu}")
+            return hu
+        else:
+            print(f"No RAM info for row with hostname {row.get('hostname')}")
+            return None
+
+    gcp_df["host_units"] = gcp_df.apply(calc_host_units, axis=1)
+
+    # Debug print some rows after host_units calculation
+    print("\nHost units sample values:")
+    print(gcp_df[["hostname", "ram_gb", "host_units"]].head())
 
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
     unmonitored_df = gcp_df[~gcp_df["monitored_in_dynatrace"]]
