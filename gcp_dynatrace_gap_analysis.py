@@ -109,7 +109,7 @@ def get_dynatrace_host_ips():
 
 # ==== GAP ANALYSIS ====
 def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
-    # 🛡️ Ensure expected columns exist
+    # 🛡️ Ensure required columns
     for col in ["ram_gb", "host_units"]:
         if col not in gcp_df.columns:
             gcp_df[col] = None
@@ -126,20 +126,17 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
 
-    # ✅ Calculate host units
+    # ✅ Compute host_units
     gcp_df["host_units"] = gcp_df.apply(
         lambda row: ceil(row["ram_gb"] / 16) if pd.notnull(row["ram_gb"]) else None,
         axis=1
     )
 
-    # ✅ Filter data
+    # ✅ Data splits
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
     unmonitored_df = gcp_df[~gcp_df["monitored_in_dynatrace"]]
 
-    # ✅ Output
-    gcp_df.to_csv("gcp_dynatrace_gap_report.csv", index=False)
-    unmonitored_df.to_csv("gcp_hosts_not_monitored.csv", index=False)
-
+    # ✅ Summary values
     summary = {
         "total_gcp_hosts": len(gcp_df),
         "total_host_units_all": gcp_df["host_units"].sum(skipna=True),
@@ -149,9 +146,12 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
         "host_units_unmonitored": unmonitored_df["host_units"].sum(skipna=True)
     }
 
+    # ✅ Output CSVs
+    gcp_df.to_csv("gcp_dynatrace_gap_report.csv", index=False)
+    unmonitored_df.to_csv("gcp_hosts_not_monitored.csv", index=False)
     pd.DataFrame([summary]).to_csv("gcp_host_unit_summary.csv", index=False)
 
-    # ✅ Summary print
+    # ✅ Summary Print
     print("\n✅ Gap analysis completed.")
     print(f"🔢 Total GCP hosts: {summary['total_gcp_hosts']}")
     print(f"✅ Monitored: {summary['monitored_hosts']} ({summary['host_units_monitored']} HUs)")
@@ -164,7 +164,7 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
 
 # ==== MAIN ====
 if __name__ == "__main__":
-    print("🚀 Starting GCP-Dynatrace host gap analysis...")
+    print("🚀 Starting GCP–Dynatrace host gap analysis...")
     gcp_df = get_gcp_instances(GCP_PROJECTS)
     dynatrace_ip_set, dynatrace_ip_map = get_dynatrace_host_ips()
     generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map)
