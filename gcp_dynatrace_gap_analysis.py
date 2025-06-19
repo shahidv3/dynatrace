@@ -1,6 +1,6 @@
-import csv
 import math
 import requests
+import pandas as pd
 import google.auth
 from googleapiclient.discovery import build
 
@@ -12,7 +12,6 @@ GCP_PROJECTS = [
 
 DYNATRACE_API_URL = "https://<your-env>.live.dynatrace.com/api/v1/entity/infrastructure/hosts"
 DYNATRACE_API_TOKEN = "<your-dynatrace-api-token>"
-
 
 # -------- GCP FUNCTIONS --------
 def get_gcp_instances(project_id, credentials):
@@ -32,14 +31,14 @@ def get_gcp_instances(project_id, credentials):
                 machine_type = machine_type_url.split("/")[-1]
                 zone_name = machine_type_url.split("/")[-3]
 
-                # OS information
+                # OS from license
                 os_info = (
                     instance.get("disks", [{}])[0]
                     .get("licenses", ["unknown"])[0]
                     .split("/")[-1]
                 )
 
-                # RAM & CPU
+                # RAM/vCPU info
                 try:
                     mt_response = service.machineTypes().get(
                         project=project_id,
@@ -58,13 +57,13 @@ def get_gcp_instances(project_id, credentials):
                     "name": name,
                     "project": project_id,
                     "zone": zone_name,
+                    "machine_type": machine_type,
                     "status": status,
                     "internal_ip": internal_ip,
-                    "machine_type": machine_type,
                     "os": os_info,
-                    "vcpus": vcpus,
                     "ram_mb": ram_mb,
-                    "ram_gb": ram_gb
+                    "ram_gb": ram_gb,
+                    "vcpus": vcpus
                 })
 
         request = service.instances().aggregatedList_next(
@@ -74,8 +73,7 @@ def get_gcp_instances(project_id, credentials):
 
     return all_vms
 
-
-# -------- DYNATRACE FUNCTIONS --------
+# -------- DYNATRACE --------
 def get_dynatrace_internal_ips():
     headers = {"Authorization": f"Api-Token {DYNATRACE_API_TOKEN}"}
     ip_set = set()
@@ -94,61 +92,9 @@ def get_dynatrace_internal_ips():
         print(f"❌ Dynatrace API error: {e}")
     return ip_set, ip_map
 
-
-# -------- MATCHING + GAP ANALYSIS --------
-def match_and_report(all_instances, dynatrace_ips, dynatrace_map):
-    matched = []
-    unmatched = []
-
-    for inst in all_instances:
-        ip = (inst.get("internal_ip") or "").strip().lower()
-        if ip in dynatrace_ips:
-            inst["monitored"] = "Yes"
-            inst["dynatrace_host"] = dynatrace_map.get(ip)
-            matched.append(inst)
-        else:
-            inst["monitored"] = "No"
-            inst["dynatrace_host"] = ""
-            inst["required_hu"] = math.ceil(inst["ram_gb"] / 16) if inst["ram_gb"] else 0
-            unmatched.append(inst)
-
-    # CSV: Full report
-    write_csv("gcp_dynatrace_gap_report.csv", all_instances, [
-        "name", "project", "zone", "machine_type", "internal_ip", "status",
-        "os", "vcpus", "ram_mb", "ram_gb", "monitored", "dynatrace_host"
-    ])
-
-    # CSV: Unmonitored only
-    write_csv("gcp_hosts_not_monitored.csv", unmatched, [
-        "name", "project", "zone", "machine_type", "internal_ip", "status",
-        "os", "vcpus", "ram_mb", "ram_gb", "required_hu"
-    ])
-
-    # CSV: Summary
-    summary = {
-        "total_vms": len(all_instances),
-        "monitored_vms": len(matched),
-        "unmonitored_vms": len(unmatched),
-        "required_hus_unmonitored": sum(i.get("required_hu", 0) for i in unmatched)
-    }
-    write_csv("gcp_host_unit_summary.csv", [summary], summary.keys())
-
-    print("\n✅ GAP ANALYSIS DONE")
-    print(f"🔢 Total VMs: {summary['total_vms']}")
-    print(f"✅ Monitored: {summary['monitored_vms']}")
-    print(f"❌ Unmonitored: {summary['unmonitored_vms']} (HUs needed: {summary['required_hus_unmonitored']})")
-
-
-def write_csv(filename, data, fieldnames):
-    with open(filename, "w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=fieldnames)
-        writer.writeheader()
-        writer.writerows(data)
-
-
 # -------- MAIN --------
 if __name__ == "__main__":
-    print("🔍 Starting GCP-Dynatrace Gap Analysis...\n")
+    print("🔍 Starting GCP–Dynatrace Gap Analysis...\n")
     credentials, _ = google.auth.default()
 
     all_instances = []
@@ -159,5 +105,36 @@ if __name__ == "__main__":
     print("🌐 Fetching monitored hosts from Dynatrace...")
     dynatrace_ips, dynatrace_ip_map = get_dynatrace_internal_ips()
 
-    print("📊 Matching & generating gap reports...")
-    match_and_report(all_instances, dynatrace_ips, dynatrace_ip_map)
+    print("📊 Matching & calculating Host Units...")
+    for inst in all_instances:
+        ip = (inst.get("internal_ip") or "").strip().lower()
+        if ip in dynatrace_ips:
+            inst["monitored"] = "Yes"
+            inst["dynatrace_host"] = dynatrace_ip_map.get(ip, "")
+            inst["required_hu"] = 0
+        else:
+            inst["monitored"] = "No"
+            inst["dynatrace_host"] = ""
+            inst["required_hu"] = math.ceil(inst.get("ram_gb", 0) / 16) if inst.get("ram_gb") else 0
+
+    df_all = pd.DataFrame(all_instances)
+
+    df_unmonitored = df_all[df_all["monitored"] == "No"].copy()
+
+    summary_data = {
+        "total_vms": len(df_all),
+        "monitored_vms": (df_all["monitored"] == "Yes").sum(),
+        "unmonitored_vms": (df_all["monitored"] == "No").sum(),
+        "required_hus_unmonitored": df_unmonitored["required_hu"].sum()
+    }
+    df_summary = pd.DataFrame([summary_data])
+
+    # -------- EXPORTS --------
+    df_all.to_csv("gcp_dynatrace_gap_report.csv", index=False)
+    df_unmonitored.to_csv("gcp_hosts_not_monitored.csv", index=False)
+    df_summary.to_csv("gcp_host_unit_summary.csv", index=False)
+
+    print("\n✅ Reports generated:")
+    print("📄 gcp_dynatrace_gap_report.csv (all VMs)")
+    print("📄 gcp_hosts_not_monitored.csv (unmonitored VMs)")
+    print("📄 gcp_host_unit_summary.csv (summary)")
