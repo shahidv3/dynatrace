@@ -7,58 +7,60 @@ from google.auth import default
 # ==== CONFIGURATION ====
 DYNATRACE_API_URL = "https://your-dynatrace-domain.com/api/v1/entity/infrastructure/hosts"
 DYNATRACE_API_TOKEN = "<your_dynatrace_api_token>"
-GCP_PROJECTS = ["project-id-1", "project-id-2"]  # 🆕 Add all GCP projects here
-GCP_ZONES = ["us-central1-a", "us-central1-b"]  # Add your relevant zones
+GCP_PROJECTS = ["your-project-id-1", "your-project-id-2"]  # Replace with your project IDs
 
 
-# ==== GCP INSTANCE FETCH ====
+# ==== FETCH GCP INSTANCES ACROSS ZONES ====
 def get_gcp_instances():
     credentials, _ = default()
     all_instances = []
 
     for project in GCP_PROJECTS:
+        print(f"\n🔎 Fetching instances for project: {project}")
         service = discovery.build('compute', 'v1', credentials=credentials)
-        print(f"\n🔎 Checking project: {project}")
 
-        for zone in GCP_ZONES:
-            print(f"📦 Fetching GCP VMs from zone: {zone}")
-            try:
-                result = service.instances().list(project=project, zone=zone).execute()
-                instances = result.get("items", [])
-            except Exception as e:
-                print(f"⚠️  Failed to fetch from {project}/{zone}: {e}")
-                continue
+        try:
+            request = service.instances().aggregatedList(project=project)
+            while request is not None:
+                response = request.execute()
+                for zone, zone_data in response.get('items', {}).items():
+                    instances = zone_data.get('instances', [])
+                    for inst in instances:
+                        name = inst["name"]
+                        os_name = inst["disks"][0].get("licenses", ["Unknown"])[0].split("/")[-1]
+                        network_interfaces = inst.get("networkInterfaces", [])
+                        internal_ip = network_interfaces[0].get("networkIP", "").lower() if network_interfaces else None
 
-            for inst in instances:
-                name = inst["name"]
-                os_name = inst["disks"][0].get("licenses", ["Unknown"])[0].split("/")[-1]
-                network_interfaces = inst.get("networkInterfaces", [])
-                internal_ip = network_interfaces[0].get("networkIP", "").lower() if network_interfaces else None
+                        # Get RAM size from machine type
+                        machine_type_url = inst["machineType"]
+                        machine_type_name = machine_type_url.split("/")[-1]
+                        zone_name = machine_type_url.split("/")[-3]
 
-                # Fetch machine type RAM
-                machine_type_url = inst["machineType"]
-                machine_type_name = machine_type_url.split("/")[-1]
+                        try:
+                            machine_type = service.machineTypes().get(
+                                project=project,
+                                zone=zone_name,
+                                machineType=machine_type_name
+                            ).execute()
+                            ram_mb = machine_type.get("memoryMb", 16384)
+                            ram_gb = round(ram_mb / 1024, 2)
+                        except Exception as e:
+                            print(f"⚠️ Could not fetch machine type RAM for {name}: {e}")
+                            ram_gb = 16  # fallback
 
-                try:
-                    machine_type = service.machineTypes().get(
-                        project=project,
-                        zone=zone,
-                        machineType=machine_type_name
-                    ).execute()
-                    ram_mb = machine_type.get("memoryMb", 16384)
-                    ram_gb = round(ram_mb / 1024, 2)
-                except Exception as e:
-                    print(f"❌ Failed to fetch machine type for {name}: {e}")
-                    ram_gb = 16  # fallback
+                        all_instances.append({
+                            "project_id": project,
+                            "zone": zone_name,
+                            "hostname": name,
+                            "internal_ip": internal_ip,
+                            "os": os_name,
+                            "ram_gb": ram_gb
+                        })
 
-                all_instances.append({
-                    "project_id": project,
-                    "zone": zone,
-                    "hostname": name,
-                    "internal_ip": internal_ip,
-                    "os": os_name,
-                    "ram_gb": ram_gb
-                })
+                request = service.instances().aggregatedList_next(previous_request=request, previous_response=response)
+
+        except Exception as e:
+            print(f"❌ Error retrieving instances for {project}: {e}")
 
     return pd.DataFrame(all_instances)
 
@@ -104,14 +106,13 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     def check_monitored(row):
         ip = row.get("internal_ip")
         if ip and ip in dynatrace_ip_set:
-            return True, dynatrace_ip_map[ip]
+            return True, dynatrace_ip_map.get(ip, "")
         else:
-            return False, None
+            return False, ""
 
-    gcp_df[["monitored_in_dynatrace", "dynatrace_host"]] = gcp_df.apply(
-        lambda row: pd.Series(check_monitored(row)), axis=1
-    )
-
+    monitored_status = gcp_df.apply(lambda row: check_monitored(row), axis=1)
+    gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
+    gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
     gcp_df["host_units"] = gcp_df["ram_gb"].apply(lambda ram: ceil(ram / 16))
 
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
@@ -143,7 +144,7 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
 
 # ==== MAIN ====
 if __name__ == "__main__":
-    print("🔍 Starting GCP-Dynatrace host gap analysis across multiple projects...")
+    print("🔍 Starting GCP-Dynatrace host gap analysis using aggregated instance list...")
     gcp_df = get_gcp_instances()
     dynatrace_ip_set, dynatrace_ip_map = get_dynatrace_host_ips()
     generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map)
