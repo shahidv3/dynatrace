@@ -7,10 +7,10 @@ from google.auth import default
 # ==== CONFIGURATION ====
 DYNATRACE_API_URL = "https://your-dynatrace-domain.com/api/v1/entity/infrastructure/hosts"
 DYNATRACE_API_TOKEN = "<your_dynatrace_api_token>"  # Replace with your token
+
 GCP_PROJECTS = [
     "your-project-id-1",
     "your-project-id-2"
-    # Add more project IDs here
 ]
 
 # ==== FETCH GCP INSTANCES ACROSS PROJECTS ====
@@ -19,7 +19,7 @@ def get_gcp_instances(projects):
     all_instances = []
 
     for project in projects:
-        print(f"\n🔎 Fetching instances for project: {project}")
+        print(f"\n🔄 Setting context to project: {project}")
         service = discovery.build('compute', 'v1', credentials=credentials)
 
         try:
@@ -35,7 +35,7 @@ def get_gcp_instances(projects):
                         internal_ip = network_interfaces[0].get("networkIP", "").lower() if network_interfaces else None
                         status = inst.get("status", "UNKNOWN")
 
-                        # RAM info (optional)
+                        # RAM info
                         ram_gb = None
                         try:
                             machine_type_url = inst["machineType"]
@@ -60,16 +60,15 @@ def get_gcp_instances(projects):
                             "internal_ip": internal_ip,
                             "os": os_name,
                             "status": status,
-                            "ram_gb": ram_gb  # Always included
+                            "ram_gb": ram_gb
                         })
 
                 request = service.instances().aggregatedList_next(previous_request=request, previous_response=response)
 
         except Exception as e:
-            print(f"❌ Error retrieving instances for {project}: {e}")
+            print(f"❌ Error retrieving instances for project '{project}': {e}")
 
     return pd.DataFrame(all_instances)
-
 
 # ==== FETCH DYNATRACE MONITORED HOSTS ====
 def get_dynatrace_host_ips():
@@ -106,15 +105,12 @@ def get_dynatrace_host_ips():
             print(f"🔍 Response: {e.response.text}")
         return set(), {}
 
-
 # ==== GAP ANALYSIS ====
 def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
-    # 🛡️ Ensure required columns
     for col in ["ram_gb", "host_units"]:
         if col not in gcp_df.columns:
             gcp_df[col] = None
 
-    # ✅ Determine monitoring status
     def check_monitored(row):
         ip = row.get("internal_ip")
         if ip and ip in dynatrace_ip_set:
@@ -126,15 +122,15 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
 
-    # ✅ Ensure ram_gb is numeric and safely compute host_units
-    gcp_df["ram_gb"] = pd.to_numeric(gcp_df["ram_gb"], errors='coerce')
-    gcp_df["host_units"] = gcp_df["ram_gb"].apply(lambda x: ceil(x / 16) if pd.notnull(x) else None)
+    # Compute host units
+    gcp_df["host_units"] = gcp_df.apply(
+        lambda row: ceil(row["ram_gb"] / 16) if pd.notnull(row["ram_gb"]) else None,
+        axis=1
+    )
 
-    # ✅ Data splits
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
     unmonitored_df = gcp_df[~gcp_df["monitored_in_dynatrace"]]
 
-    # ✅ Summary values
     summary = {
         "total_gcp_hosts": len(gcp_df),
         "total_host_units_all": gcp_df["host_units"].sum(skipna=True),
@@ -144,12 +140,10 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
         "host_units_unmonitored": unmonitored_df["host_units"].sum(skipna=True)
     }
 
-    # ✅ Output CSVs
     gcp_df.to_csv("gcp_dynatrace_gap_report.csv", index=False)
     unmonitored_df.to_csv("gcp_hosts_not_monitored.csv", index=False)
     pd.DataFrame([summary]).to_csv("gcp_host_unit_summary.csv", index=False)
 
-    # ✅ Summary Print
     print("\n✅ Gap analysis completed.")
     print(f"🔢 Total GCP hosts: {summary['total_gcp_hosts']}")
     print(f"✅ Monitored: {summary['monitored_hosts']} ({summary['host_units_monitored']} HUs)")
@@ -158,7 +152,6 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     print("  - gcp_dynatrace_gap_report.csv")
     print("  - gcp_hosts_not_monitored.csv")
     print("  - gcp_host_unit_summary.csv")
-
 
 # ==== MAIN ====
 if __name__ == "__main__":
