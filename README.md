@@ -63,3 +63,16 @@ This solution provides a **unified monitoring gap analysis tool** for **Oracle C
 - Python packages:
   ```bash
   pip install google-api-python-client google-auth requests pandas
+
+
+### 🔧 OCI
+
+- OCI config set under ~/.oci/config or via instance principals
+- IAM policy for:
+
+`oci_compute_instance_read`
+`oci_identity_compartment_read`
+
+- Python packages:
+  ``` bash
+  pip install oci requests pandas
