@@ -1,32 +1,65 @@
-# Dynatrace–OCI Monitoring Gap Analysis
+# 🔍 Cloud Host Monitoring Gap Analysis & Host Unit Planning for OCI and GCP
 
-This Python script helps identify gaps between **Oracle Cloud Infrastructure (OCI)** compute instances and **Dynatrace-monitored hosts**, and calculates required **host units** for unmonitored systems.
+## Overview
 
----
+This solution provides a **unified monitoring gap analysis tool** for **Oracle Cloud Infrastructure (OCI)** and **Google Cloud Platform (GCP)** to:
 
-## 🔍 What It Does
-
-- Connects to **OCI** and fetches all **running compute instances** from multiple compartments
-- Connects to **Dynatrace API** and lists all currently **monitored hosts**
-- Compares both lists to identify **unmonitored instances**
-- Calculates **host units** required (based on RAM)
-- Outputs clean CSV reports for visibility and planning
+- Identify VMs that are not being monitored by **Dynatrace**
+- Estimate required **Host Units (HUs)** based on VM memory
+- Generate actionable **CSV reports** for visibility and planning
 
 ---
 
-## 📁 Output Files
+## 🎯 Objectives
 
-| File Name | Description |
-|-----------|-------------|
-| `oci_dynatrace_gap_report.csv` | Full list of OCI compute instances with monitoring status and host unit count |
-| `oci_hosts_not_monitored.csv` | Subset of instances missing from Dynatrace |
-| `oci_host_unit_summary.csv` | Summary of total/monitored/unmonitored hosts and host units |
+- Collect all **running virtual machines (VMs)** across OCI & GCP projects/compartments
+- Fetch **monitored hosts** from Dynatrace (via v1 or v2 API)
+- Match internal IPs to determine monitoring coverage
+- Calculate **RAM**, **CPU**, **OS info**, and estimated **Dynatrace Host Units**
+- Export data as structured **CSV reports** for decision making
 
 ---
 
-## ⚙️ Requirements
+## ☁️ Supported Platforms
 
-Install dependencies with:
+- ✅ Oracle Cloud Infrastructure (OCI)
+- ✅ Google Cloud Platform (GCP)
+- ✅ Dynatrace (Self-Managed or SaaS)
 
-```bash
-pip install -r requirements.txt
+---
+
+## 🚀 Features
+
+- Automatic discovery of **running compute instances**
+- Extracts:
+  - Internal IP
+  - RAM (in GB/MB)
+  - CPU count
+  - OS type/version
+  - Machine type
+- Dynatrace integration:
+  - Supports v1 API (`entity/infrastructure/hosts`) for monitored IPs
+- Outputs:
+  - Full instance inventory
+  - Monitored vs. unmonitored split
+  - Total required **Host Units**
+- Exported as 3 detailed **CSV reports** per cloud
+
+---
+
+## 🧱 Prerequisites
+
+### 🔐 Dynatrace API
+
+- Dynatrace API Token with:
+  - `entities.read`
+  - `Read configuration` access
+- Dynatrace Self-Managed or SaaS base URL
+
+### 🔧 GCP
+
+- `gcloud auth login` completed
+- IAM role: `Viewer` or `Compute Viewer`
+- Python packages:
+  ```bash
+  pip install google-api-python-client google-auth requests pandas
