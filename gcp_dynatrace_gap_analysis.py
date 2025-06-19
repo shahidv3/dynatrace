@@ -6,16 +6,19 @@ from google.auth import default
 
 # ==== CONFIGURATION ====
 DYNATRACE_API_URL = "https://your-dynatrace-domain.com/api/v1/entity/infrastructure/hosts"
-DYNATRACE_API_TOKEN = "<your_dynatrace_api_token>"
-GCP_PROJECTS = ["your-project-id-1", "your-project-id-2"]  # Replace with your actual GCP project IDs
+DYNATRACE_API_TOKEN = "<your_dynatrace_api_token>"  # Replace this with your token
+GCP_PROJECTS = [
+    "your-project-id-1",
+    "your-project-id-2"
+    # Add more project IDs here
+]
 
-
-# ==== FETCH GCP INSTANCES ACROSS ALL ZONES ====
-def get_gcp_instances():
+# ==== FETCH GCP INSTANCES ACROSS PROJECTS ====
+def get_gcp_instances(projects):
     credentials, _ = default()
     all_instances = []
 
-    for project in GCP_PROJECTS:
+    for project in projects:
         print(f"\n🔎 Fetching instances for project: {project}")
         service = discovery.build('compute', 'v1', credentials=credentials)
 
@@ -48,6 +51,7 @@ def get_gcp_instances():
                                 ram_gb = round(ram_mb / 1024, 2)
                         except Exception as e:
                             print(f"⚠️ Could not fetch machine type RAM for {name}: {e}")
+                            zone_name = zone_name if 'zone_name' in locals() else "unknown"
 
                         all_instances.append({
                             "project_id": project,
@@ -56,7 +60,7 @@ def get_gcp_instances():
                             "internal_ip": internal_ip,
                             "os": os_name,
                             "status": status,
-                            "ram_gb": ram_gb
+                            "ram_gb": ram_gb  # ✅ Always present
                         })
 
                 request = service.instances().aggregatedList_next(previous_request=request, previous_response=response)
@@ -105,6 +109,10 @@ def get_dynatrace_host_ips():
 
 # ==== GAP ANALYSIS ====
 def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
+    # 🛡️ Ensure ram_gb exists
+    if "ram_gb" not in gcp_df.columns:
+        gcp_df["ram_gb"] = None
+
     def check_monitored(row):
         ip = row.get("internal_ip")
         if ip and ip in dynatrace_ip_set:
@@ -115,7 +123,6 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
     monitored_status = gcp_df.apply(lambda row: check_monitored(row), axis=1)
     gcp_df["monitored_in_dynatrace"] = monitored_status.map(lambda x: x[0])
     gcp_df["dynatrace_host"] = monitored_status.map(lambda x: x[1])
-
     gcp_df["host_units"] = gcp_df["ram_gb"].apply(lambda ram: ceil(ram / 16) if pd.notnull(ram) else None)
 
     monitored_df = gcp_df[gcp_df["monitored_in_dynatrace"]]
@@ -147,7 +154,7 @@ def generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map):
 
 # ==== MAIN ====
 if __name__ == "__main__":
-    print("🔍 Starting GCP-Dynatrace host gap analysis using aggregated instance list...")
-    gcp_df = get_gcp_instances()
+    print("🚀 Starting GCP-Dynatrace host gap analysis...")
+    gcp_df = get_gcp_instances(GCP_PROJECTS)
     dynatrace_ip_set, dynatrace_ip_map = get_dynatrace_host_ips()
     generate_gap_report(gcp_df, dynatrace_ip_set, dynatrace_ip_map)
