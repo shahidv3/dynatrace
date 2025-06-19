@@ -24,11 +24,25 @@ def get_gcp_instances():
 
         for inst in instances:
             name = inst["name"]
-            os_name = inst["disks"][0]["licenses"][0].split("/")[-1] if "licenses" in inst["disks"][0] else "Unknown"
-            ram_mb = inst["machineType"].split("/")[-1]  # e.g., n1-standard-4
-            ram_gb = _estimate_ram_from_machine_type(ram_mb)
+            os_name = inst["disks"][0].get("licenses", ["Unknown"])[0].split("/")[-1]
             network_interfaces = inst.get("networkInterfaces", [])
             internal_ip = network_interfaces[0].get("networkIP", "").lower() if network_interfaces else None
+
+            # Fetch machine type to get actual RAM
+            machine_type_url = inst["machineType"]
+            machine_type_name = machine_type_url.split("/")[-1]
+
+            try:
+                machine_type = service.machineTypes().get(
+                    project=GCP_PROJECT,
+                    zone=zone,
+                    machineType=machine_type_name
+                ).execute()
+                ram_mb = machine_type.get("memoryMb", 16384)
+                ram_gb = round(ram_mb / 1024, 2)
+            except Exception as e:
+                print(f"❌ Failed to fetch machine type for {name}: {e}")
+                ram_gb = 16  # fallback
 
             all_instances.append({
                 "hostname": name,
@@ -39,22 +53,6 @@ def get_gcp_instances():
             })
 
     return pd.DataFrame(all_instances)
-
-
-def _estimate_ram_from_machine_type(machine_type):
-    # This is a simplified RAM estimator. Adjust based on your actual GCP pricing/machine types.
-    mapping = {
-        "n1-standard-1": 3.75,
-        "n1-standard-2": 7.5,
-        "n1-standard-4": 15,
-        "n1-standard-8": 30,
-        "n1-standard-16": 60,
-        "n2-standard-4": 16,
-        "n2-standard-8": 32,
-        "e2-medium": 4,
-        "e2-standard-2": 8,
-    }
-    return mapping.get(machine_type, 16)
 
 
 # ==== FETCH DYNATRACE MONITORED HOSTS ====
