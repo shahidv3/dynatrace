@@ -1,0 +1,143 @@
+Cross-Cloud Lifecycle Strategy for Replicated Buckets
+
+(Oracle Cloud Infrastructure Object Storage ↔ Google Cloud Storage)
+
+⸻
+
+Problem Statement
+
+The organization maintains bi-directional disaster recovery (DR) replication between:
+	•	OCI — Primary Data Center
+	•	GCP — Secondary Data Center (becomes Primary during failover)
+
+Two bucket categories exist with different retention requirements:
+
+1. Operational Buckets (Short Retention)
+	•	Archive after 14 days
+	•	Delete after 22 days
+
+2. Core Banking Buckets (Compliance Retention)
+	•	Archive for minimum 1 year
+	•	No deletion allowed
+
+If lifecycle policies are defined only on OCI:
+	•	Storage tier mismatch occurs
+	•	Retention becomes inconsistent
+	•	DR failover leads to unpredictable behavior
+	•	Storage costs may increase
+	•	Compliance risks arise
+
+Important:
+Cloud lifecycle engines operate independently. Replication tools do not automatically replicate lifecycle policies or translate storage tiers.
+
+⸻
+
+Storage Tier Differences
+
+OCI Object Storage Tiers
+	•	Standard Tier
+	•	Frequent access
+	•	Immediate retrieval
+	•	Archive Tier
+	•	Low-cost cold storage
+	•	Requires restore before access
+	•	Designed for long-term retention
+
+⸻
+
+GCP Cloud Storage Classes
+	•	Standard
+	•	Frequent access
+	•	Nearline
+	•	Infrequent access (fast retrieval)
+	•	Coldline
+	•	Very infrequent access
+	•	Lower cost than Nearline
+	•	Archive
+	•	Long-term retention
+	•	Lowest cost
+	•	365-day minimum storage billing
+
+⸻
+
+Requirement 1 — Operational Buckets (Short-Term Retention)
+
+Lifecycle Objective
+	•	Frequent access initially
+	•	Move to low-cost storage after 14 days
+	•	Automatic deletion after 22 days
+
+Recommended Lifecycle Mapping
+
+|| Requirement || OCI Policy || Recommended GCP Policy ||
+| Frequent access | Standard Tier | Standard Class |
+| Low-cost storage after 14 days | Archive Tier | Coldline Class |
+| Delete after 22 days | Delete Rule | Delete Rule |
+
+Why Coldline Instead of GCP Archive?
+	•	GCP Archive has 365-day minimum billing
+	•	Not cost-effective for short retention
+	•	Coldline provides better cost alignment with OCI Archive for short-lived data
+
+⸻
+
+Requirement 2 — Core Banking Buckets (Long-Term Compliance Retention)
+
+Lifecycle Objective
+	•	Preserve data for at least 1 year
+	•	Prevent accidental deletion
+	•	Meet audit and regulatory requirements
+	•	Ensure recoverability during DR failover
+
+Recommended Lifecycle Mapping
+
+|| Requirement || OCI Policy || Corresponding GCP Policy ||
+| Frequent access (initial) | Standard Tier | Standard Class |
+| Long-term archival | Move to Archive Tier after defined age | Move to Archive Storage Class after same age |
+| Object deletion | No delete rule | No delete rule |
+
+Why GCP Archive Is Suitable?
+	•	Designed for long-term cold storage
+	•	365-day minimum billing aligns with compliance needs
+	•	Closest equivalent to OCI Archive tier
+
+⸻
+
+Root Cause of Cross-Cloud Lifecycle Drift
+
+Replication tools typically:
+	•	Copy object data
+	•	Copy metadata
+	•	Do not convert storage tier semantics
+	•	Do not replicate lifecycle rules
+
+Therefore, lifecycle intent must be configured separately on each cloud.
+
+⸻
+
+Final Recommendations
+	•	Define lifecycle policies independently in both clouds
+	•	Map tiers based on retention intent, not tier names
+	•	Validate replication behavior for delete synchronization
+	•	Test DR failover scenarios for:
+	•	Data availability
+	•	Application behavior
+	•	Retention compliance
+	•	Monitor storage cost impact across both clouds
+
+⸻
+
+Conclusion
+
+Proper lifecycle alignment ensures:
+	•	Predictable disaster recovery behavior
+	•	Regulatory compliance
+	•	Consistent retention posture
+	•	Optimized storage cost
+	•	No unexpected data loss
+
+Failure to align lifecycle policies can result in:
+	•	Retention drift
+	•	Cost overruns
+	•	Compliance violations
+	•	Operational risk during failover
