@@ -1,0 +1,141 @@
+# kube-prometheus-stack Upgrade Path
+## `61.2.0` → `82.15.1` — CVE-2024-41110 Remediation
+ 
+> **Context:** This upgrade path remediates **CVE-2024-41110** (Critical — Docker authorization bypass) affecting `github.com/docker/docker` bundled in Prometheus images `v2.44.0` and `v2.46.0`.  
+> Performed in **4 controlled hops** to avoid breaking changes across CRD boundaries.
+ 
+---
+ 
+## 📋 Upgrade Overview Table
+ 
+| Phase | From | To | Prometheus | Prom-Operator | CVE Status | Breaking Changes |
+|-------|------|----|------------|---------------|------------|-----------------|
+| **Phase 1** | `61.2.0` | `62.6.0` | `v2.44/46` | `v0.75.x` | ❌ Still Vulnerable | None expected |
+| **Phase 2** | `62.6.0` | `65.8.1` | `v2.54.1` | `v0.77.1` | ⚠️ Partially Mitigated | Minor: kubeScheduler rules split |
+| **Phase 3** | `65.8.1` | `68.8.0` | `v2.54.x` | `v0.78.x` | ⚠️ Partially Mitigated | CRD auto-upgrade job available |
+| **Phase 4** | `68.8.0` | `82.15.1` | `v3.x` | `v0.89.0` | ✅ **FIXED** | Prometheus v2→v3 config flags |
+ 
+---
+ 
+## 🔍 Vulnerability Summary
+ 
+| CVE | Severity | Package | Affected Images | Fix Version |
+|-----|----------|---------|----------------|-------------|
+| `CVE-2024-41110` | 🔴 Critical | `github.com/docker/docker` | `quay.io/prometheus/prometheus:v2.44.0` | `docker v23.0.15` |
+| `CVE-2024-41110` | 🔴 Critical | `github.com/docker/docker` | `quay.io/prometheus/prometheus:v2.46.0` | `docker v25.0.6` |
+| `CVE-2024-2961` | 🔴 Critical | `libc6` | `ghcr.io/peimanaja/artifactory_exporter:v1.9.3` | Base image rebuild ⚠️ |
+ 
+> ⚠️ **Note:** `CVE-2024-2961` on the `artifactory_exporter` image is **NOT fixed** by this chart upgrade. It requires a separate base image rebuild.
+ 
+---
+ 
+## 🚀 Phase-by-Phase Upgrade Instructions
+ 
+### Pre-flight Checklist (Run Before Every Phase)
+ 
+```bash
+# 1. Backup current Helm values
+helm get values prometheus -n monitoring > values-backup-$(date +%F).yaml
+ 
+# 2. Check current deployed chart version
+helm list -n monitoring
+ 
+# 3. Preview changes before applying
+helm diff upgrade prometheus prometheus-community/kube-prometheus-stack \
+  --version <TARGET_VERSION> \
+  --reuse-values \
+  --namespace monitoring
+```
+ 
+---
+ 
+### Phase 1 — `61.2.0` → `62.6.0`
+ 
+**What changes:** Minor CRD additions, no API renames. Safe warm-up hop.
+ 
+```bash
+# Step 1: Update repo
+helm repo update
+ 
+# Step 2: Update CRDs (Operator v0.75.0)
+for crd in alertmanagerconfigs alertmanagers podmonitors probes prometheusagents \
+           prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers; do
+  kubectl apply --server-side -f \
+    https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.75.0/example/prometheus-operator-crd/monitoring.coreos.com_${crd}.yaml
+done
+ 
+# Step 3: Dry-run
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --version 62.6.0 \
+  --reuse-values --dry-run
+ 
+# Step 4: Apply
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --version 62.6.0 \
+  --reuse-values
+ 
+# Step 5: Verify
+kubectl get pods -n monitoring
+kubectl get prometheus -n monitoring
+```
+ 
+**✅ Post-check:** All pods `Running`, Prometheus UI accessible.
+ 
+---
+ 
+### Phase 2 — `62.6.0` → `65.8.1`
+ 
+**What changes:** Prometheus `v2.53 → v2.54.1`, Operator `v0.75 → v0.77.1`.  
+ 
+> ⚠️ **Breaking:** `defaultRules.rules.kubeScheduler` is split into  
+> `defaultRules.rules.kubeSchedulerAlerting` and `defaultRules.rules.kubeSchedulerRecording`.  
+> Update your `values.yaml` if you override `kubeScheduler` rules.
+ 
+```bash
+# Step 1: Update values.yaml if needed
+# OLD:  defaultRules.rules.kubeScheduler: true
+# NEW:  defaultRules.rules.kubeSchedulerAlerting: true
+#       defaultRules.rules.kubeSchedulerRecording: true
+ 
+# Step 2: Update CRDs (Operator v0.77.0)
+for crd in alertmanagerconfigs alertmanagers podmonitors probes prometheusagents \
+           prometheuses prometheusrules scrapeconfigs servicemonitors thanosrulers; do
+  kubectl apply --server-side -f \
+    https://raw.githubusercontent.com/prometheus-operator/prometheus-operator/v0.77.0/example/prometheus-operator-crd/monitoring.coreos.com_${crd}.yaml
+done
+ 
+# Step 3: Dry-run
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --version 65.8.1 \
+  --reuse-values --dry-run
+ 
+# Step 4: Apply
+helm upgrade prometheus prometheus-community/kube-prometheus-stack \
+  --namespace monitoring \
+  --version 65.8.1 \
+  --reuse-values
+ 
+# Step 5: Verify
+kubectl get pods -n monitoring
+kubectl get prometheus -n monitoring
+```
+ 
+**✅ Post-check:** Confirm ServiceMonitor discovery intact, dashboards loading.
+ 
+---
+ 
+### Phase 3 — `65.8.1` → `68.8.0`
+ 
+**What changes:** Operator `v0.77 → v0.78`, CRD auto-upgrade job introduced.
+ 
+> ℹ️ From `68.4.0` onwards, you can enable automatic CRD upgrades via:
+> ```yaml
+> crds:
+>   upgradeJob:
+>     enabled: true
+> ```
+ 
+
