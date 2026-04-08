@@ -1,0 +1,52 @@
+Create a single command-center dashboard for my environment that provides a unified operational view across Kubernetes, Linux servers, Windows servers, databases, applications, and synthetic monitoring.
+
+The dashboard should be optimized for a command center team and focus on triage, not deep troubleshooting.
+
+Requirements:
+	1.	Top summary panels:
+
+	•	Total active alerts (critical, high, warning)
+	•	Affected clusters, hosts, and workloads
+
+	2.	Main table panel:
+
+	•	Show active alerts using ALERTS metric
+	•	Include columns: alert name, severity, cluster, namespace, workload, instance, service, and time
+	•	Make it easy to filter and sort by severity
+
+	3.	Kubernetes section:
+
+	•	Show workload health using available metrics (deployment, statefulset, or daemonset)
+	•	Include ready replicas, restarts, and pod status
+	•	Do not assume only deployments; adapt to available metrics
+
+	4.	Infrastructure section:
+
+	•	Show Linux and Windows host health
+	•	Include CPU, memory, and disk usage
+
+	5.	Database section:
+
+	•	Show database availability and connections if metrics exist
+
+	6.	Application section:
+
+	•	Show request rate, error rate, and latency if metrics exist
+
+	7.	Synthetic / certificate section:
+
+	•	Show endpoint availability, latency, and certificate expiry if available
+
+	8.	Noise reduction:
+
+	•	Add a panel showing top noisy alerts using ALERTS over time
+
+Important constraints:
+	•	Use only metrics available in my datasource
+	•	If a metric is not available, skip that panel instead of failing
+	•	Use table panels for most sections
+	•	Do not hardcode workload names
+	•	Automatically adapt to labels like cluster, namespace, deployment, statefulset, instance
+
+Goal:
+This dashboard should be usable as a primary command-center view to quickly identify what is broken and where
